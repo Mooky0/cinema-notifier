@@ -1,0 +1,7 @@
+services:
+  cinema_notifier:
+    build: .
+    container_name: cinema_notifier
+    env_file:
+      - .env
+    restart: unless-stopped
