@@ -7,9 +7,18 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
+import logging
+import sys
+from dotenv import load_dotenv
+from kvstore import Movie, MovieStore
+
+if os.path.exists('.env'):
+    from dotenv import load_dotenv
+    load_dotenv()
 
 # --- CONFIGURATION ---
 FILM_ID = os.getenv("FILM_ID")  # From your URL
+CINEMA_ID = os.getenv("CINEMA_ID", "1052")  # Default cinema ID if not set
 START_DATE_STR = os.getenv("START_DATE_STR")
 DAYS_TO_CHECK = int(os.getenv("DAYS_TO_CHECK", 10))    # How many days after the start date to monitor
 CHECK_DELAY = int(os.getenv("CHECK_DELAY", 60))   # How often to run the full check (in seconds). 3600 = 1 hour.
@@ -19,6 +28,8 @@ SMTP_PORT = 465                 # For SSL
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 PASSWORD = os.getenv("PASSWORD")  # NOT your regular login password
 RECIEVER_EMAIL = os.getenv("RECIEVER_EMAIL")
+DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
+KVSTORE_URL = os.getenv("KVSTORE_URL", "localhost:8081")
 
 # Headers to mimic your browser request
 HEADERS = {
@@ -30,17 +41,22 @@ HEADERS = {
     'sec-ch-ua': '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
 }
 
+logger = logging.getLogger(__name__)
+db: MovieStore = None  # Will be initialized later
+
 def get_api_url(date):
     return f"https://www.cinemacity.cz/cz/data-api-service/v1/quickbook/10101/cinema-events/in-group/prague/with-film/{FILM_ID}/at-date/{date}?attr=&lang=en_GB"
 
 def check_for_screenings():
     # We use a set to keep track of event IDs we've already seen
     # In a real scenario, you might want to save this to a file
-    seen_event_ids = set()
-    
+    #seen_event_ids = set()
+
+    global db
+
     start_date = datetime.strptime(START_DATE_STR, "%Y-%m-%d")
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting check cycle...")
+    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] Starting check cycle...")
 
     while True:
         new_screenings_found = []
@@ -60,36 +76,38 @@ def check_for_screenings():
                     
                     for event in events:
                         e_id = event.get('id')
-                        if e_id not in seen_event_ids:
-                            # New screening detected!
-                            info = {
-                                "date": target_date,
-                                "time": event.get('eventDateTime'),
-                                "attribute": event.get('attributeIds'),
-                                "id": e_id
-                            }
-                            new_screenings_found.append(info)
-                            seen_event_ids.add(e_id)
+                        attributes = event.get('attributeIds', {})
+                        cinema_id = event.get('cinemaId')
+                        if not db.exists(e_id):
+                            if cinema_id == CINEMA_ID and "70-mm" in attributes:
+                                # New screening detected!
+                                info = Movie(
+                                    date=target_date,
+                                    time=event.get('eventDateTime'),
+                                    id=e_id
+                                )
+                                new_screenings_found.append(info)
+                                db.put_movie(e_id, info)
                 else:
-                    print(f"Error {response.status_code} for date {target_date}")
+                    logger.info(f"Error {response.status_code} for date {target_date}")
 
             except Exception as e:
-                print(f"Connection error on {target_date}: {e}")
+                logger.info(f"Connection error on {target_date}: {e}")
             
             # Short sleep between requests to avoid rate limiting
             time.sleep(2)
 
         # Notification Logic
         if new_screenings_found:
-            print("\n🔔 NEW SCREENINGS DETECTED!")
+            logger.info("🔔 NEW SCREENINGS DETECTED!")
             for s in new_screenings_found:
-                print(f"📅 Date: {s['date']} | Time: {s['time']} | ID: {s['id']}")
-            print("-" * 30)
+                logger.info(f"📅 Date: {s.date} | Time: {s.time} | ID: {s.id}")
+            logger.info("-" * 30)
             notify(new_screenings_found)
         else:
-            print(f"Checked {DAYS_TO_CHECK} days. No new screenings found.")
+            logger.info(f"Checked {DAYS_TO_CHECK} days. No new screenings found.")
 
-        print(f"Waiting {CHECK_DELAY}s for next check...\n")
+        logger.info(f"Waiting {CHECK_DELAY}s for next check...\n")
         time.sleep(CHECK_DELAY)
 
 def notify(screenings):
@@ -102,7 +120,7 @@ def notify(screenings):
     body = "A new screening has been detected. Check the script output for details."
     body += "\n\nDetails:\n"
     for s in screenings:
-        body += f"- Date: {s['date']}, Time: {s['time']}, ID: {s['id']}\n"
+        body += f"- Date: {s.date}, Time: {s.time}, ID: {s.id}\n"
     message.attach(MIMEText(body, "plain"))
 
     # Create a secure SSL context and send the email
@@ -110,12 +128,30 @@ def notify(screenings):
 
     try:
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
+            if DEBUG_MODE:
+                logger.info("DEBUG MODE: Email not sent. Here is the email content:")
+                logger.info(message.as_string())
+                return
             server.login(SENDER_EMAIL, PASSWORD)
             server.sendmail(SENDER_EMAIL, RECIEVER_EMAIL, message.as_string())
-        print("Email sent successfully!")
+        logger.info("Email sent successfully!")
     except Exception as e:
-        print(f"Error: {e}")
+        logger.info(f"Error: {e}")
 
+def main():
+    global db
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('[%(asctime)s] - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
+
+    db = MovieStore(KVSTORE_URL)
+
+    check_for_screenings()
 
 if __name__ == "__main__":
-    check_for_screenings()
+    main()

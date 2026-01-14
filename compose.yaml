@@ -1,7 +1,14 @@
 services:
   cinema_notifier:
-    build: .
+    build: notifier/.
     container_name: cinema_notifier
     env_file:
-      - .env
+      - notifier/.env
+    restart: unless-stopped
+  
+  kv-store:
+    build:
+      context: kvstore/kvstore/
+      dockerfile: deploy/Dockerfile
+    container_name: kv_store
     restart: unless-stopped
