@@ -61,7 +61,7 @@ func (c *client) Put(vkv api.VersionedKeyValue) error {
 	defer r.Body.Close()
 
 	if r.StatusCode != http.StatusOK {
-		return fmt.Errorf("Server returned error: %s", err)
+		return fmt.Errorf("server returned error: %s", r.Status)
 	}
 
 	return nil

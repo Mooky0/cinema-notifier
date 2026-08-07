@@ -115,8 +115,8 @@ func NewServer(logFile string) (*Server, error) {
 }
 
 func (s *Server) reset() {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.store = make(map[string]api.VersionedValue)
 }
 

@@ -5,6 +5,9 @@ import time
 import random
 import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class VersionedKeyValue():
     
     def __init__(self, value, version, key = None):
@@ -13,17 +16,31 @@ class VersionedKeyValue():
         self.version = version
 
 class Movie():
-    
-    def __init__(self, date, time, id):
+
+    def __init__(self, date, time, id, auditorium=None, sold_out=None,
+                 availability=None, languages=None, attributes=None,
+                 booking_link=None):
         self.date = date
         self.time = time
         self.id = id
+        self.auditorium = auditorium
+        self.sold_out = sold_out
+        self.availability = availability
+        self.languages = languages or {}
+        self.attributes = attributes or []
+        self.booking_link = booking_link
 
     def dict(self):
         return {
             'date': self.date,
             'time': self.time,
-            'id': self.id
+            'id': self.id,
+            'auditorium': self.auditorium,
+            'sold_out': self.sold_out,
+            'availability': self.availability,
+            'languages': self.languages,
+            'attributes': self.attributes,
+            'booking_link': self.booking_link,
         }
 
 class KVClient():
@@ -83,7 +100,7 @@ class KVClient():
             
             # Map the JSON array back to a list of VersionedKeyValue objects
             return [
-                VersionedKeyValue(key = item['key'], item = item['value'], version = item['version'])
+                VersionedKeyValue(key = item['key'], value = item['value'], version = item['version'])
                 for item in json_list
             ]
 
@@ -111,8 +128,8 @@ class MovieStore():
                 # 1. Fetch current state
                 try:
                     existing = self.kv_client.get(movie_id)
-                    version = existing.version + 1
-                except Exception: 
+                    version = existing.version
+                except Exception:
                     # Assume 404/Not Found means version 1
                     version = 1
                 

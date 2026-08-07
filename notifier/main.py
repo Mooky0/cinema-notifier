@@ -6,6 +6,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from html import escape
 import os
 import logging
 import sys
@@ -20,7 +21,7 @@ if os.path.exists('.env'):
 FILM_ID = os.getenv("FILM_ID")  # From your URL
 CINEMA_ID = os.getenv("CINEMA_ID", "1052")  # Default cinema ID if not set
 START_DATE_STR = os.getenv("START_DATE_STR")
-DAYS_TO_CHECK = int(os.getenv("DAYS_TO_CHECK", 10))    # How many days after the start date to monitor
+DAYS_TO_CHECK = int(os.getenv("DAYS_TO_CHECK", 50))    # How many days after the start date to monitor
 CHECK_DELAY = int(os.getenv("CHECK_DELAY", 60))   # How often to run the full check (in seconds). 3600 = 1 hour.
 
 SMTP_SERVER = "smtp.gmail.com"  # For Gmail
@@ -30,6 +31,9 @@ PASSWORD = os.getenv("PASSWORD")  # NOT your regular login password
 RECIEVER_EMAIL = os.getenv("RECIEVER_EMAIL")
 DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
 KVSTORE_URL = os.getenv("KVSTORE_URL", "localhost:8081")
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Headers to mimic your browser request
 HEADERS = {
@@ -84,7 +88,13 @@ def check_for_screenings():
                                 info = Movie(
                                     date=target_date,
                                     time=event.get('eventDateTime'),
-                                    id=e_id
+                                    id=e_id,
+                                    auditorium=event.get('auditorium'),
+                                    sold_out=event.get('soldOut'),
+                                    availability=event.get('availabilityRatio'),
+                                    languages=event.get('languages'),
+                                    attributes=attributes,
+                                    booking_link=event.get('bookingRouterLaunchLink'),
                                 )
                                 new_screenings_found.append(info)
                                 db.put_movie(e_id, info)
@@ -104,24 +114,155 @@ def check_for_screenings():
                 logger.info(f"📅 Date: {s.date} | Time: {s.time} | ID: {s.id}")
             logger.info("-" * 30)
             notify(new_screenings_found)
+            send_telegram_notification(new_screenings_found)
         else:
             logger.info(f"Checked {DAYS_TO_CHECK} days. No new screenings found.")
 
         logger.info(f"Waiting {CHECK_DELAY}s for next check...\n")
         time.sleep(CHECK_DELAY)
 
+def format_screening_time(screening):
+    try:
+        dt = datetime.strptime(screening.time, "%Y-%m-%dT%H:%M:%S")
+        return dt.strftime("%A, %d %B %Y"), dt.strftime("%H:%M")
+    except (TypeError, ValueError):
+        return screening.date, screening.time
+
+def format_languages(languages):
+    if not languages:
+        return None
+    parts = []
+    if languages.get("original"):
+        parts.append("audio: " + "/".join(languages["original"]).upper())
+    if languages.get("dubbed"):
+        parts.append("dubbed: " + "/".join(languages["dubbed"]).upper())
+    if languages.get("subtitles"):
+        parts.append("subtitles: " + "/".join(languages["subtitles"]).upper())
+    return ", ".join(parts) if parts else None
+
+def format_availability(screening):
+    if screening.sold_out:
+        return "Sold out"
+    if screening.availability is not None:
+        try:
+            return f"{round((1 - float(screening.availability)) * 100)}% seats available"
+        except (TypeError, ValueError):
+            pass
+    return None
+
+def build_text_body(screenings):
+    lines = ["New 70mm screening(s) detected!", ""]
+    for s in screenings:
+        day, time_str = format_screening_time(s)
+        lines.append(f"- {day} at {time_str}")
+        if s.auditorium:
+            lines.append(f"  Auditorium: {s.auditorium}")
+        langs = format_languages(s.languages)
+        if langs:
+            lines.append(f"  {langs}")
+        availability = format_availability(s)
+        if availability:
+            lines.append(f"  {availability}")
+        if s.attributes:
+            lines.append(f"  Tags: {', '.join(s.attributes)}")
+        if s.booking_link:
+            lines.append(f"  Book: {s.booking_link}")
+        lines.append(f"  Event ID: {s.id}")
+        lines.append("")
+    return "\n".join(lines)
+
+def build_html_body(screenings):
+    cards = []
+    for s in screenings:
+        day, time_str = format_screening_time(s)
+        rows = []
+        if s.auditorium:
+            rows.append(("Auditorium", escape(s.auditorium)))
+        langs = format_languages(s.languages)
+        if langs:
+            rows.append(("Language", escape(langs)))
+        availability = format_availability(s)
+        if availability:
+            rows.append(("Availability", escape(availability)))
+        if s.attributes:
+            rows.append(("Tags", escape(", ".join(s.attributes))))
+        rows.append(("Event ID", escape(str(s.id))))
+
+        rows_html = "".join(
+            f'''<tr>
+                <td style="padding:4px 0;color:#666666;font-size:14px;width:110px;vertical-align:top;">{label}</td>
+                <td style="padding:4px 0;color:#111111;font-size:14px;">{value}</td>
+            </tr>'''
+            for label, value in rows
+        )
+
+        book_button = ""
+        if s.booking_link:
+            book_button = f'''
+            <a href="{escape(s.booking_link)}"
+               style="display:block;text-align:center;background-color:#e50914;color:#ffffff;
+                      text-decoration:none;font-size:16px;font-weight:bold;padding:14px 0;
+                      border-radius:8px;margin-top:12px;">
+                Book now
+            </a>'''
+
+        cards.append(f'''
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+               style="background-color:#ffffff;border-radius:12px;margin-bottom:16px;
+                      box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="padding:16px;">
+              <div style="font-size:18px;font-weight:bold;color:#111111;">{escape(day)}</div>
+              <div style="font-size:22px;font-weight:bold;color:#e50914;margin-bottom:8px;">{escape(time_str)}</div>
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                {rows_html}
+              </table>
+              {book_button}
+            </td>
+          </tr>
+        </table>''')
+
+    return f'''\
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+</head>
+<body style="margin:0;padding:0;background-color:#f2f2f2;
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f2f2f2;">
+    <tr>
+      <td align="center" style="padding:16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;">
+          <tr>
+            <td style="padding:8px 4px 16px 4px;">
+              <div style="font-size:20px;font-weight:bold;color:#111111;">🎬 New 70mm screening{'s' if len(screenings) != 1 else ''} found!</div>
+              <div style="font-size:14px;color:#666666;margin-top:4px;">{len(screenings)} new screening{'s' if len(screenings) != 1 else ''} just went up.</div>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              {''.join(cards)}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>'''
+
 def notify(screenings):
     # Send email notification or any other form of alert
-    message = MIMEMultipart()
+    message = MIMEMultipart("alternative")
     message["From"] = SENDER_EMAIL
     message["To"] = RECIEVER_EMAIL
-    message["Subject"] = "Cinema Screening Alert! 🎬"
+    count = len(screenings)
+    message["Subject"] = f"🎬 {count} New 70mm Screening{'s' if count != 1 else ''} Detected!"
 
-    body = "A new screening has been detected. Check the script output for details."
-    body += "\n\nDetails:\n"
-    for s in screenings:
-        body += f"- Date: {s.date}, Time: {s.time}, ID: {s.id}\n"
-    message.attach(MIMEText(body, "plain"))
+    message.attach(MIMEText(build_text_body(screenings), "plain"))
+    message.attach(MIMEText(build_html_body(screenings), "html"))
 
     # Create a secure SSL context and send the email
     context = ssl.create_default_context()
@@ -137,6 +278,50 @@ def notify(screenings):
         logger.info("Email sent successfully!")
     except Exception as e:
         logger.info(f"Error: {e}")
+
+def build_telegram_message(screenings):
+    count = len(screenings)
+    lines = [f"🎬 <b>{count} new 70mm screening{'s' if count != 1 else ''} found!</b>", ""]
+    for s in screenings:
+        day, time_str = format_screening_time(s)
+        lines.append(f"📅 <b>{escape(day)}</b> at <b>{escape(time_str)}</b>")
+        if s.auditorium:
+            lines.append(f"🎞 {escape(s.auditorium)}")
+        availability = format_availability(s)
+        if availability:
+            lines.append(f"🎟 {escape(availability)}")
+        if s.booking_link:
+            lines.append(f'<a href="{escape(s.booking_link)}">Book now</a>')
+        lines.append("")
+    lines.append("Check your email for full details.")
+    return "\n".join(lines)
+
+def send_telegram_notification(screenings):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.info("Telegram not configured (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing), skipping.")
+        return
+
+    text = build_telegram_message(screenings)
+
+    if DEBUG_MODE:
+        logger.info("DEBUG MODE: Telegram message not sent. Here is the content:")
+        logger.info(text)
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        response = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }, timeout=15)
+        if response.status_code == 200:
+            logger.info("Telegram notification sent successfully!")
+        else:
+            logger.info(f"Telegram error {response.status_code}: {response.text}")
+    except Exception as e:
+        logger.info(f"Telegram connection error: {e}")
 
 def main():
     global db
