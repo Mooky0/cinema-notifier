@@ -281,20 +281,8 @@ def notify(screenings):
 
 def build_telegram_message(screenings):
     count = len(screenings)
-    lines = [f"🎬 <b>{count} new 70mm screening{'s' if count != 1 else ''} found!</b>", ""]
-    for s in screenings:
-        day, time_str = format_screening_time(s)
-        lines.append(f"📅 <b>{escape(day)}</b> at <b>{escape(time_str)}</b>")
-        if s.auditorium:
-            lines.append(f"🎞 {escape(s.auditorium)}")
-        availability = format_availability(s)
-        if availability:
-            lines.append(f"🎟 {escape(availability)}")
-        if s.booking_link:
-            lines.append(f'<a href="{escape(s.booking_link)}">Book now</a>')
-        lines.append("")
-    lines.append("Check your email for full details.")
-    return "\n".join(lines)
+    return (f"🎬 {count} new 70mm screening{'s' if count != 1 else ''} found! "
+            f"Check your email for details.")
 
 def send_telegram_notification(screenings):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
