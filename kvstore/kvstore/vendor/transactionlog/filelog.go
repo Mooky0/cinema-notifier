@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // FileTransactionLogger is an implementation of the TransactionLogger interface that stores the
@@ -80,10 +82,21 @@ func (l *FileTransactionLogger) ReadEvents() ([]Event, error) {
 		line := scanner.Text()
 		var e Event
 
-		_, err := fmt.Sscanf(line, "%d\t%s\t%s", &e.Sequence, &e.Type, &e.Value)
+		// Value may itself contain spaces (e.g. a JSON string field), so it can't be
+		// parsed with a whitespace-delimited verb like %s. Split on tabs instead, and
+		// treat everything after the second tab as the value.
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			return []Event{}, fmt.Errorf("input parse error: malformed record %q", line)
+		}
+
+		sequence, err := strconv.ParseUint(parts[0], 10, 64)
 		if err != nil {
 			return []Event{}, fmt.Errorf("input parse error: %w", err)
 		}
+		e.Sequence = sequence
+		e.Type = parts[1]
+		e.Value = parts[2]
 		// Sanity check! Are the sequence numbers in increasing order?
 		if l.lastSequence >= e.Sequence {
 			return []Event{}, fmt.Errorf("transaction numbers out of sequence")

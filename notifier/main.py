@@ -123,12 +123,39 @@ def check_for_screenings():
         logger.info(f"Waiting {CHECK_DELAY}s for next check...\n")
         time.sleep(CHECK_DELAY)
 
+WEEKEND_WEEKDAYS = {4, 5, 6}  # Friday, Saturday, Sunday
+LOW_AVAILABILITY_THRESHOLD = 20  # percent of seats left
+
 def format_screening_time(screening):
     try:
         dt = datetime.strptime(screening.time, "%Y-%m-%dT%H:%M:%S")
         return dt.strftime("%A, %d %B %Y"), dt.strftime("%H:%M")
     except (TypeError, ValueError):
         return screening.date, screening.time
+
+def parse_screening_datetime(screening):
+    try:
+        return datetime.strptime(screening.time, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+def is_weekend(screening):
+    dt = parse_screening_datetime(screening)
+    return dt is not None and dt.weekday() in WEEKEND_WEEKDAYS
+
+def seats_available_pct(screening):
+    if screening.sold_out or screening.availability is None:
+        return None
+    try:
+        return round((1 - float(screening.availability)) * 100)
+    except (TypeError, ValueError):
+        return None
+
+def is_low_availability(screening):
+    if screening.sold_out:
+        return False
+    pct = seats_available_pct(screening)
+    return pct is not None and pct <= LOW_AVAILABILITY_THRESHOLD
 
 def format_languages(languages):
     if not languages:
@@ -145,18 +172,20 @@ def format_languages(languages):
 def format_availability(screening):
     if screening.sold_out:
         return "Sold out"
-    if screening.availability is not None:
-        try:
-            return f"{round((1 - float(screening.availability)) * 100)}% seats available"
-        except (TypeError, ValueError):
-            pass
-    return None
+    pct = seats_available_pct(screening)
+    return f"{pct}% seats available" if pct is not None else None
 
 def build_text_body(screenings):
     lines = ["New 70mm screening(s) detected!", ""]
     for s in screenings:
         day, time_str = format_screening_time(s)
-        lines.append(f"- {day} at {time_str}")
+        tags = []
+        if is_weekend(s):
+            tags.append("WEEKEND")
+        if is_low_availability(s):
+            tags.append("LOW AVAILABILITY")
+        tag_suffix = f" [{', '.join(tags)}]" if tags else ""
+        lines.append(f"- {day} at {time_str}{tag_suffix}")
         if s.auditorium:
             lines.append(f"  Auditorium: {s.auditorium}")
         langs = format_languages(s.languages)
@@ -177,26 +206,55 @@ def build_html_body(screenings):
     cards = []
     for s in screenings:
         day, time_str = format_screening_time(s)
+        weekend = is_weekend(s)
+        pct = seats_available_pct(s)
+        low_avail = is_low_availability(s)
+
+        if s.sold_out:
+            availability_color = "#6b7280"
+        elif low_avail:
+            availability_color = "#dc2626"
+        elif pct is not None and pct <= 40:
+            availability_color = "#d97706"
+        else:
+            availability_color = "#16a34a"
+
         rows = []
         if s.auditorium:
-            rows.append(("Auditorium", escape(s.auditorium)))
+            rows.append(("Auditorium", escape(s.auditorium), "#111111"))
         langs = format_languages(s.languages)
         if langs:
-            rows.append(("Language", escape(langs)))
+            rows.append(("Language", escape(langs), "#111111"))
         availability = format_availability(s)
         if availability:
-            rows.append(("Availability", escape(availability)))
+            avail_text = escape(availability)
+            if low_avail:
+                avail_text = f"🔥 {avail_text} — act fast!"
+            rows.append(("Availability", avail_text, availability_color))
         if s.attributes:
-            rows.append(("Tags", escape(", ".join(s.attributes))))
-        rows.append(("Event ID", escape(str(s.id))))
+            rows.append(("Tags", escape(", ".join(s.attributes)), "#111111"))
+        rows.append(("Event ID", escape(str(s.id)), "#111111"))
 
         rows_html = "".join(
             f'''<tr>
                 <td style="padding:4px 0;color:#666666;font-size:14px;width:110px;vertical-align:top;">{label}</td>
-                <td style="padding:4px 0;color:#111111;font-size:14px;">{value}</td>
+                <td style="padding:4px 0;color:{color};font-size:14px;font-weight:{'bold' if color != '#111111' else 'normal'};">{value}</td>
             </tr>'''
-            for label, value in rows
+            for label, value, color in rows
         )
+
+        badges = ""
+        if weekend:
+            badges += ('<span style="display:inline-block;background-color:#ede9fe;color:#6d28d9;'
+                       'font-size:12px;font-weight:bold;padding:3px 8px;border-radius:12px;'
+                       'margin-right:6px;">🎉 WEEKEND</span>')
+        if low_avail:
+            badges += ('<span style="display:inline-block;background-color:#fee2e2;color:#dc2626;'
+                       'font-size:12px;font-weight:bold;padding:3px 8px;border-radius:12px;">'
+                       '🔥 ALMOST FULL</span>')
+        badges_html = f'<div style="margin-bottom:6px;">{badges}</div>' if badges else ""
+
+        card_border = "#dc2626" if low_avail else ("#7c3aed" if weekend else "#e50914")
 
         book_button = ""
         if s.booking_link:
@@ -211,9 +269,11 @@ def build_html_body(screenings):
         cards.append(f'''
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
                style="background-color:#ffffff;border-radius:12px;margin-bottom:16px;
+                      border-left:4px solid {card_border};
                       box-shadow:0 1px 3px rgba(0,0,0,0.1);">
           <tr>
             <td style="padding:16px;">
+              {badges_html}
               <div style="font-size:18px;font-weight:bold;color:#111111;">{escape(day)}</div>
               <div style="font-size:22px;font-weight:bold;color:#e50914;margin-bottom:8px;">{escape(time_str)}</div>
               <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
