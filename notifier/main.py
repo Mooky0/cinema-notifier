@@ -35,12 +35,14 @@ KVSTORE_URL = os.getenv("KVSTORE_URL", "localhost:8081")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+FILM_PAGE_URL = f'https://www.cinemacity.cz/films/odyssea/{FILM_ID}'
+
 # Headers to mimic your browser request
 HEADERS = {
     'accept': 'application/json;charset=utf-8',
     'accept-language': 'en-GB,en;q=0.9,en-US;q=0.8,hu;q=0.7',
     'cache-control': 'no-cache',
-    'referer': f'https://www.cinemacity.cz/films/odyssea/{FILM_ID}',
+    'referer': FILM_PAGE_URL,
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
     'sec-ch-ua': '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
 }
@@ -94,7 +96,7 @@ def check_for_screenings():
                                     availability=event.get('availabilityRatio'),
                                     languages=event.get('languages'),
                                     attributes=attributes,
-                                    booking_link=event.get('bookingRouterLaunchLink'),
+                                    booking_link=FILM_PAGE_URL,
                                 )
                                 new_screenings_found.append(info)
                                 db.put_movie(e_id, info)
@@ -203,7 +205,7 @@ def build_html_body(screenings):
                style="display:block;text-align:center;background-color:#e50914;color:#ffffff;
                       text-decoration:none;font-size:16px;font-weight:bold;padding:14px 0;
                       border-radius:8px;margin-top:12px;">
-                Book now
+                View & book
             </a>'''
 
         cards.append(f'''
